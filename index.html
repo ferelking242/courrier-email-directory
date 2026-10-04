@@ -106,6 +106,28 @@
       white-space: nowrap;
     }
     .count strong { display: block; color: var(--ink); font-size: 1.35rem; letter-spacing: -.04em; }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 9px 18px;
+      margin: 14px 4px 0;
+      color: var(--muted);
+      font-size: .75rem;
+    }
+    .legend-item { display: inline-flex; align-items: center; gap: 7px; }
+    .legend-symbol {
+      display: grid;
+      width: 20px;
+      height: 20px;
+      place-items: center;
+      border-radius: 6px;
+      font-size: .8rem;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .legend-symbol.blocked { background: #fff0ee; color: #c54b43; }
+    .legend-symbol.working { background: #eaf6ee; color: #328558; }
     .alphabet {
       display: flex;
       gap: 6px;
@@ -170,9 +192,20 @@
       font-weight: 800;
     }
     .email-list { display: grid; gap: 2px; padding-top: 7px; }
+    .email-row {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 3px;
+      padding: 2px;
+      border-radius: 10px;
+      transition: background .14s ease;
+    }
+    .email-row[data-state="blocked"] { background: #fff0ee; }
+    .email-row[data-state="working"] { background: #eaf6ee; }
     .email-button {
       display: flex;
-      width: 100%;
+      flex: 1;
       min-width: 0;
       align-items: center;
       justify-content: space-between;
@@ -192,6 +225,30 @@
     .email-button:hover .copy-icon, .email-button:focus-visible .copy-icon { opacity: 1; }
     .email-button.copied { background: var(--green-soft); color: var(--green-strong); }
     .email-button.copied .copy-icon { color: var(--green); opacity: 1; }
+    .email-row[data-state="blocked"] .email-button { color: #ad3e36; }
+    .email-row[data-state="working"] .email-button { color: #176b45; }
+    .status-controls { display: flex; flex: 0 0 auto; gap: 3px; }
+    .status-mark {
+      display: grid;
+      width: 27px;
+      height: 27px;
+      place-items: center;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      font-size: .9rem;
+      font-weight: 850;
+      line-height: 1;
+      cursor: pointer;
+      transition: background .14s ease, color .14s ease, transform .14s ease;
+    }
+    .status-mark:hover { transform: translateY(-1px); }
+    .status-mark:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+    .status-mark.blocked { color: #c54b43; }
+    .status-mark.blocked:hover, .status-mark.blocked[aria-pressed="true"] { border-color: #f1c7c3; background: #d9554c; color: #fff; }
+    .status-mark.working { color: #37865a; }
+    .status-mark.working:hover, .status-mark.working[aria-pressed="true"] { border-color: #bfdfc9; background: #328558; color: #fff; }
     .empty {
       display: none;
       padding: 54px 20px;
@@ -233,9 +290,10 @@
       .alphabet { margin: 13px 0 22px; }
       .directory { grid-template-columns: 1fr; gap: 10px; }
       .letter-card { padding: 14px 14px 9px; }
-      .email-button { padding: 10px 7px; }
+      .email-button { padding: 10px 5px; }
       .email-text { font-size: .85rem; }
       .copy-icon { opacity: .75; }
+      .status-mark { width: 28px; height: 30px; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
   </style>
@@ -273,6 +331,11 @@
       </label>
       <div class="count"><strong id="total-count">—</strong><span>adresses disponibles</span></div>
     </section>
+    <div class="legend" aria-label="Légende des boutons">
+      <span class="legend-item"><span class="legend-symbol blocked" aria-hidden="true">×</span> Bloqué par Replit</span>
+      <span class="legend-item"><span class="legend-symbol working" aria-hidden="true">✓</span> Confirmé fonctionnel</span>
+      <span class="legend-item">Touche l’adresse pour la copier</span>
+    </div>
 
     <nav id="alphabet" class="alphabet" aria-label="Aller à une lettre"></nav>
     <section id="directory" class="directory" aria-label="Adresses classées par ordre alphabétique"></section>
@@ -293,6 +356,16 @@
       const empty = document.querySelector("#empty");
       const toast = document.querySelector("#toast");
       let toastTimer;
+      const STATUS_STORAGE_KEY = "courrier-email-directory-status-v1";
+      let emailStatuses = {};
+      try {
+        const savedStatuses = JSON.parse(localStorage.getItem(STATUS_STORAGE_KEY) || "{}");
+        if (savedStatuses && typeof savedStatuses === "object" && !Array.isArray(savedStatuses)) {
+          emailStatuses = savedStatuses;
+        }
+      } catch {
+        emailStatuses = {};
+      }
 
       const getLetter = (email) => {
         const first = email.trim().charAt(0).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
@@ -314,6 +387,45 @@
         span.setAttribute("aria-hidden", "true");
         span.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.6"/></svg>';
         return span;
+      }
+
+      function makeStatusButton(status, label, symbol, email, row) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `status-mark ${status}`;
+        button.textContent = symbol;
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        const key = email.toLocaleLowerCase();
+        button.setAttribute("aria-pressed", String(emailStatuses[key] === status));
+        button.addEventListener("click", () => {
+          const nextStatus = emailStatuses[key] === status ? "" : status;
+          if (nextStatus) emailStatuses[key] = nextStatus;
+          else delete emailStatuses[key];
+          let saved = true;
+          try {
+            localStorage.setItem(STATUS_STORAGE_KEY, JSON.stringify(emailStatuses));
+          } catch {
+            saved = false;
+          }
+          row.dataset.state = nextStatus;
+          row.querySelector(".status-mark.blocked").setAttribute("aria-pressed", String(nextStatus === "blocked"));
+          row.querySelector(".status-mark.working").setAttribute("aria-pressed", String(nextStatus === "working"));
+          if (nextStatus) {
+            const statusMessage = nextStatus === "blocked"
+              ? "Email marqué comme bloqué"
+              : "Email confirmé comme fonctionnel";
+            toast.textContent = saved
+              ? statusMessage
+              : `${statusMessage} — non conservé après fermeture`;
+          } else {
+            toast.textContent = saved ? "Marque retirée" : "Marque retirée pour cette page";
+          }
+          toast.classList.add("show");
+          window.clearTimeout(toastTimer);
+          toastTimer = window.setTimeout(() => toast.classList.remove("show"), 1700);
+        });
+        return button;
       }
 
       sortedLetters.forEach((letter) => {
@@ -341,6 +453,12 @@
         const list = document.createElement("div");
         list.className = "email-list";
         groups.get(letter).forEach((email) => {
+          const row = document.createElement("div");
+          row.className = "email-row";
+          const statusKey = email.toLocaleLowerCase();
+          const storedStatus = emailStatuses[statusKey];
+          row.dataset.state = storedStatus === "blocked" || storedStatus === "working" ? storedStatus : "";
+
           const button = document.createElement("button");
           button.type = "button";
           button.className = "email-button";
@@ -351,7 +469,14 @@
           text.textContent = email;
           button.append(text, makeCopyIcon());
           button.addEventListener("click", () => copyEmail(email, button));
-          list.append(button);
+          const statusControls = document.createElement("span");
+          statusControls.className = "status-controls";
+          statusControls.append(
+            makeStatusButton("blocked", "Marquer comme bloqué par Replit", "×", email, row),
+            makeStatusButton("working", "Confirmer que le compte fonctionne", "✓", email, row),
+          );
+          row.append(button, statusControls);
+          list.append(row);
           buttonByEmail.set(email, button);
         });
         card.append(heading, list);
